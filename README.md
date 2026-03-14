@@ -203,6 +203,11 @@ git reset --hard origin/main
 - обычный git-репозиторий внутри неё
 - deploy key для GitHub, по умолчанию `/root/.ssh/tenders_github`
 
+Тест деплоя:
+
+- для проверки GitHub Actions можно сделать любой небольшой коммит в `main`
+- workflow подключится к VPS и выполнит `bash ./deploy/deploy_from_github.sh`
+
 При необходимости значения можно переопределить через переменные окружения:
 
 - `PROJECT_DIR`
