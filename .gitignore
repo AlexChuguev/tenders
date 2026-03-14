@@ -1,0 +1,12 @@
+.env
+.venv/
+.pycache/
+__pycache__/
+downloads/
+manual_downloads/
+platform_selectors.json
+.DS_Store
+~$*.xlsx
+*.backup.xlsx
+*.before_*.xlsx
+tender_analysis.xlsx

@@ -1,0 +1,22 @@
+{
+  "login": {
+    "username": "#Email",
+    "password": "#Password",
+    "submit": "button[type='submit']",
+    "success_wait_for": "a[href*='logoff']"
+  },
+  "documents": {
+    "container": "body",
+    "links": [
+      "a[href*='download']",
+      "a[href*='file']",
+      "a[href*='document']",
+      "a[href$='.pdf']",
+      "a[href$='.doc']",
+      "a[href$='.docx']",
+      "a[href$='.xls']",
+      "a[href$='.xlsx']",
+      "a[href$='.zip']"
+    ]
+  }
+}
