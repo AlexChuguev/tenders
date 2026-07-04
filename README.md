@@ -2,21 +2,78 @@
 
 Python-агент для обработки выгрузки тендеров из Excel, скачивания документов через браузер, анализа документов через OpenAI API и записи результата в локальный `xlsx`.
 
+## Текущее состояние и правила работы
+
+Актуальная рабочая ветка для правок после аудита:
+
+```bash
+codex/extraction-quality-report
+```
+
+Локальный репозиторий может быть впереди `origin/main`, но push делать не обязательно. Если нужно обновить только локальный репозиторий, достаточно локального commit в этой ветке.
+
+Что коммитить:
+
+- код пайплайна;
+- тесты;
+- `prompt_template.md`;
+- `triage_policy.json` / regression-файлы, если они менялись осознанно;
+- утилиты запуска и проверки.
+
+Что не коммитить:
+
+- `tender_analysis.xlsx`;
+- `tender_analysis_backup.xlsx`;
+- `manual_downloads/`;
+- `downloads/`;
+- `artifacts/`;
+- `state/extraction_cache/`;
+- `logs/`;
+- `llm_errors.log`;
+- временные Excel lock-файлы вида `~$*.xlsx`.
+
+Перед commit всегда проверять:
+
+```bash
+git diff --cached --name-only
+git diff --cached --stat
+```
+
+Минимальная проверка перед commit:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest tests.test_audit_regressions
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python run_regression_pack.py
+```
+
+Если после фикса extraction менялась логика `.doc/.docx/.pdf/.xlsx`, очистить битый cache:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python clean_extraction_cache.py
+```
+
 ## Что уже реализовано
 
 - Импорт тендеров из `.xls`
 - Логин в Seldon через Playwright
 - Проверка документов сначала в Seldon, затем fallback на внешнюю площадку
 - Скачивание документов по настраиваемым CSS-селекторам и эвристикам по ссылкам
-- Анализ документов в OpenAI Responses API по вашему шаблону промпта
+- Анализ документов через text-only `chat.completions` / OpenAI-compatible API
 - Поддержка разных LLM-провайдеров через единый слой провайдеров
 - Запись результата в локальный `xlsx`
+- Rule-based facts как основной источник Excel-summary
+- Verified LLM findings: LLM-вывод попадает в summary только если его quote найден в извлечённом тексте
+- Extraction/input reports в артефактах
+- Batch-level `_extraction_summary.json`
+- Regression pack и unit-тесты на ключевые ошибки extraction/summary/Excel
 
 ## Ограничения
 
 - Автологин и fallback на внешнюю площадку зависят от конкретной вёрстки. Для запуска лучше настроить `platform_selectors.json` под вашу страницу логина и карточку тендера.
 - Входной файл должен содержать колонку со ссылкой на тендер. Для выгрузки Seldon.Pro агент уже умеет читать Excel hyperlinks из колонки `Номер извещения (ссылка на источник)`.
 - Выходной Excel создаётся локально в папке проекта.
+- `summary` в Excel строится системой из проверяемых фактов. LLM может улучшить формулировку только через verified finding с подтверждённой цитатой.
+- При сетевом или LLM-сбое результат пишется как технический статус, а не как успешный анализ.
 
 ## Быстрый старт
 
@@ -58,14 +115,79 @@ cp platform_selectors.example.json platform_selectors.json
 - `login.submit`: селектор кнопки входа
 - `login.success_wait_for`: селектор или текст, который появляется после успешного входа
 - `documents.links`: список CSS-селекторов ссылок на документы
+- `documents_by_host`: host-specific переопределения селекторов для отдельных площадок
 
 Сначала агент пытается найти документы прямо на странице Seldon по всем ссылкам на странице. Если не находит, он ищет внешнюю ссылку на источник закупки и уже для неё использует `platform_selectors.json`.
+
+Для внешних площадок лучше настраивать отдельные селекторы по host, например для `zakupki.gov.ru`, `rts-tender.ru`, `roseltorg.ru`, `agregatoreat.ru`. Это снижает шум и уменьшает число ложных проходов по неподходящим ссылкам.
+
+Для браузерного скачивания через manifest добавлены безопасные ограничения по умолчанию:
+
+- пауза между тендерами `2.0-4.5` сек
+- максимум `12` тендеров за прогон
+- максимум `4` тендера на один host
+- максимум `40` файлов за прогон
+- максимум `12` файлов на один host
+- пауза по host после `2` blocked или `2` error подряд
+
+Стратегии скачивания в manifest теперь трактуются так:
+
+- `supported_platform` — реально подтверждённый авто-канал
+- `direct` — можно пробовать прямой публичный download
+- `manual` — площадка требует логин/капчу или ручной проход
+- `network_blocked` — площадка в текущем канале стабильно упирается в reset/timeout и автоматически пропускается
+
+При необходимости это можно переопределить через `.env`:
+
+- `DOWNLOAD_PAUSE_MIN_SECONDS`
+- `DOWNLOAD_PAUSE_MAX_SECONDS`
+- `DOWNLOAD_MAX_TENDERS_TOTAL`
+- `DOWNLOAD_MAX_TENDERS_PER_HOST`
+- `DOWNLOAD_MAX_FILES_TOTAL`
+- `DOWNLOAD_MAX_FILES_PER_HOST`
+- `DOWNLOAD_MAX_BLOCKED_PER_HOST`
+- `DOWNLOAD_MAX_ERRORS_PER_HOST`
+- `DOWNLOAD_ONLY_HOSTS` — необязательный список host через запятую для точечного прогона, например `utp.sberbank-ast.ru,www.b2b-center.ru`
 
 5. Запустите:
 
 ```bash
 python3 main.py
 ```
+
+## Локальный API-агент на Mac
+
+Если внешний VPS плохо ходит на ЭТП, основной контур можно держать локально на Mac.
+
+Один цикл:
+
+```bash
+bash ./run_seldon_api_local_pipeline.sh
+```
+
+Что делает цикл:
+
+- `prepare` через `Seldon API`
+- выключает `VPN` для скачивания документов
+- скачивает документы локально
+- включает `VPN` обратно
+- запускает анализ
+- пишет сводку в `logs/local/last_local_run_summary.txt`
+
+Полезные переменные:
+
+- `LOCAL_SWITCH_VPN=true|false`
+- `VPN_SERVICE=VPN`
+- `LOCAL_PIPELINE_INTERVAL_SECONDS=1800`
+- `LOCAL_PIPELINE_LOG_DIR=/Users/alexchuguev/Documents/tenders/logs/local`
+
+Фоновый локальный агент через `launchd`:
+
+```bash
+bash ./deploy/install_local_launch_agent.sh
+```
+
+После установки агент держит локальный daemon-процесс и запускает цикл по интервалу `LOCAL_PIPELINE_INTERVAL_SECONDS`.
 
 ## Локальный режим без скачивания через площадки
 
@@ -107,6 +229,66 @@ python3 review_local.py
 
 Агент возьмёт тендеры из входного `xls`, отфильтрует их по дате окончания приёма заявок, найдёт локальные файлы по `tender_id`, выполнит анализ через OpenAI и запишет результат в `tender_analysis.xlsx`.
 
+Если вы используете папки, созданные через `prepare_folders.py`, лучше запускать так:
+
+```bash
+python3 review_local.py /path/to/manual_downloads/Seldon.Pro_2026-03-13_17.44.27 /path/to/Seldon.Pro_2026-03-13_17.44.27.xls
+```
+
+В этом режиме агент:
+
+- читает `_manifest.csv`
+- берёт файлы строго из соответствующей папки тендера
+- анализирует только непустые папки
+- не пытается угадывать соответствие файлов тендерам
+
+Стандартный безопасный батч-прогон:
+
+```bash
+bash ./run_local_batch_safe.sh \
+  /Users/alexchuguev/Documents/tenders/manual_downloads/Seldon.Pro_YYYY-MM-DD_HH.MM.SS \
+  /Users/alexchuguev/Downloads/Seldon.Pro_YYYY-MM-DD_HH.MM.SS.xls \
+  /Users/alexchuguev/Documents/tenders/tender_analysis.xlsx
+```
+
+После изменений taxonomy/extraction нельзя ограничиваться только батчем. Нужен quality-check:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python tenders_cli.py quality-check \
+  /Users/alexchuguev/Documents/tenders/manual_downloads/Seldon.Pro_YYYY-MM-DD_HH.MM.SS \
+  /Users/alexchuguev/Downloads/Seldon.Pro_YYYY-MM-DD_HH.MM.SS.xls \
+  --excel /Users/alexchuguev/Documents/tenders/tender_analysis.xlsx \
+  --write-report
+```
+
+Эта команда делает две вещи:
+- проверяет полноту `XLS -> папки -> артефакты -> Excel`;
+- сравнивает сохранённые артефакты с deterministic rerender по текущим правилам.
+
+Артефакты отчёта пишутся в папку батча:
+- `_completeness_report.csv`
+- `_completeness_report.json`
+- `_quality_check.json`
+- `_quality_check.md`
+
+Regression pack гоняется так:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python run_regression_pack.py
+```
+
+Если нашёл новый системный баг на реальном артефакте, не надо держать его в чате. Нужно сразу сделать skeleton-кейс:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python create_regression_case.py \
+  /absolute/path/to/artifact.json
+```
+
+Команда напечатает заготовку JSON-кейса для `regression_pack.json`. После этого:
+- подправляешь ожидаемые токены руками;
+- добавляешь кейс в `regression_pack.json`;
+- снова запускаешь `run_regression_pack.py`.
+
 ## LLM архитектура
 
 Слой анализа теперь отделён от конкретной модели. Поддерживаются провайдеры:
@@ -136,6 +318,110 @@ LLM_MODEL=test
 ```
 
 Чтобы добавить новый провайдер, достаточно реализовать интерфейс `analyze_documents(prompt, files)` в новом модуле внутри `tender_agent/llm/` и зарегистрировать его в `factory.py`.
+
+## Engineering rules
+
+Рабочие правила проекта зафиксированы в [PROJECT_MEMORY.md](/Users/alexchuguev/Documents/tenders/PROJECT_MEMORY.md).
+
+Это не документация “для красоты”, а источник правды для:
+- классификации legacy / integration / outstaff / non-profile;
+- требований к качеству summary;
+- правил владения Excel-полями;
+- обязательных quality-check после изменения логики.
+
+## Tenderplan API
+
+Для быстрого тестирования Tenderplan API через PAT добавлен клиент и CLI:
+
+- `tender_agent/tenderplan_api.py`
+- `tenderplan_request.py`
+
+Нужно заполнить в `.env`:
+
+- `TENDERPLAN_BASE_URL`
+- `TENDERPLAN_PAT`
+- `TENDERPLAN_TIMEOUT_SECONDS`
+
+Пример запроса:
+
+```bash
+python3 tenderplan_request.py /api/v1/example --query limit=1
+```
+
+Пример POST с телом:
+
+```bash
+python3 tenderplan_request.py /api/v1/example --method POST --body-file body.json
+```
+
+CLI не пытается угадывать endpoint'ы Tenderplan и нужен как безопасный способ быстро дергать реальные методы из их документации с вашим PAT.
+
+## Seldon API
+
+Для smoke-test Seldon API добавлены:
+
+- `tender_agent/seldon_api.py`
+- `seldon_api_smoke.py`
+
+Нужно заполнить в `.env`:
+
+- `SELDON_API_BASE_URL`
+- `SELDON_API_LOGIN`
+- `SELDON_API_PASSWORD`
+- `SELDON_API_TIMEOUT_SECONDS`
+
+Схема взята из локального руководства пользователя:
+
+- `POST /User/Login` -> получить `token`
+- `POST /User/Balance?token=...`
+- `POST /User/Filters?token=...`
+
+Запуск smoke-test:
+
+```bash
+python3 seldon_api_smoke.py
+```
+
+Он делает минимальную проверку:
+
+- логинится
+- получает token
+- проверяет баланс
+- запрашивает фильтры
+
+Первый рабочий шаг интеграции Tenderplan:
+
+- `tenderplan_candidates.py`
+
+Он:
+
+- получает список тендеров через Tenderplan API
+- прогоняет их через `search_profile.flatsystems.json`
+- записывает отобранных кандидатов в `tender_analysis.xlsx`
+
+Запуск:
+
+```bash
+python3 tenderplan_candidates.py
+```
+
+## Профиль поиска
+
+Правила отбора тендеров вынесены в отдельный JSON-профиль:
+
+- `search_profile.flatsystems.json`
+
+Внутри три блока:
+
+- `include_any` — позитивные ключи
+- `exclude_any` — стоп-слова
+- `secondary_signals` — дополнительные уточняющие сигналы
+
+Путь можно переопределить через:
+
+- `SEARCH_PROFILE_PATH`
+
+Это позволяет использовать один и тот же фильтр и для `xls`, и для Tenderplan API, и для любых следующих источников.
 
 ## Структура проекта
 
