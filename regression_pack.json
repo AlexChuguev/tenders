@@ -1,0 +1,66 @@
+[
+  {
+    "name": "industrial_promsintez",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-16_11.54.52/Оказание_услуг_по_созданию_автоматизированной_системы_контроля_учета_на_ГПП-1_35_10_3_кВ__ПРОМСИНТЕЗ__f5d98d71ab.json",
+    "expected_decision": "Не брать",
+    "expected_summary_contains": ["АСКУЭ", "промышленная автоматизация", "электротехнической лаборатории"],
+    "expected_stack_contains": ["АСКУЭ", "промышленная автоматизация"],
+    "expected_requirements_contains": ["электротехнической лаборатории", "аттестованный персонал"],
+    "expected_signals_contains": ["непрофильный тип закупки: промышленная автоматизация / электроучет"]
+  },
+  {
+    "name": "legacy_outstaff_group_company",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-08_13.22.01/Предоставление_услуг_по_созданию__адаптации__доработке_и_документированию_программного_обеспечения_для_АО__Группа_компан__1002d86fff.json",
+    "expected_decision": "Не брать",
+    "expected_summary_contains": ["Python", "PostgreSQL", "Angular"],
+    "expected_stack_contains": ["Python", "PostgreSQL", "Angular"],
+    "expected_signals_contains": ["legacy/существующая ИС / модификация системы", "аутсорсинг персонала, не проектная разработка"]
+  },
+  {
+    "name": "python_outstaff_pick",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-14_09.59.38/Подбор_разработчика_Python__5d37cde453.json",
+    "expected_decision": "Уточнить",
+    "expected_summary_contains": ["аутстаффинг вместо проектной разработки", "PostgreSQL", "Vue", "Docker"],
+    "expected_stack_contains": ["PostgreSQL", "Vue", "Docker"],
+    "expected_signals_contains": ["аутсорсинг персонала, не проектная разработка"]
+  },
+  {
+    "name": "b2b_nikamed",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-08_13.22.01/Разработка_B2B-кабинета__личного_кабинета_корпоративных_клиентов__для_ООО__НИКАМЕД__7946741911.json",
+    "expected_decision": "Уточнить",
+    "expected_summary_contains": ["1С", "REST API"],
+    "expected_stack_contains": ["1С", "REST API"],
+    "expected_signals_contains": []
+  },
+  {
+    "name": "legacy_mobile_crews",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-09_09.26.48/Выполнение_работ_по_модификации_информационной_системы__Система_управления_мобильными_бригадами__в_части_модификации_авт__1dc624581a.json",
+    "expected_decision": "Уточнить",
+    "expected_summary_contains": ["доработка существующей ИС"],
+    "expected_signals_contains": ["legacy/существующая ИС / модификация системы"]
+  },
+  {
+    "name": "kis_integration",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-13_11.43.24/Развитие_КИС__Т__Интеграция__e9a22306ab.json",
+    "expected_decision": "Не брать",
+    "expected_summary_contains": ["PostgreSQL"],
+    "expected_stack_contains": ["PostgreSQL"],
+    "expected_signals_contains": ["legacy/существующая ИС / модификация системы", "enterprise/коробочный контур"]
+  },
+  {
+    "name": "mobile_lekta",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-10_16.11.56/Оказание_услуг_по_разработке_мобильного_приложения__Лекта__для_нужд_АО__Издательство__Просвещение__-_023П-2026__fa9c33ecc2.json",
+    "expected_decision": "Не брать",
+    "expected_summary_contains": ["Python", "React", "Kotlin", "Swift", "PostgreSQL"],
+    "expected_stack_contains": ["Python", "React", "Kotlin", "Swift", "PostgreSQL"],
+    "expected_signals_contains": ["сильное совпадение стека: Python, React"]
+  },
+  {
+    "name": "web_portal_patient",
+    "artifact": "artifacts/local_review/Seldon.Pro_2026-04-01_09.10.00/Выполнение_работ_по_разработке_адаптивной_веб-версии_Личного_кабинета_Пациента__bb8ae4d1dd.json",
+    "expected_decision": "Не брать",
+    "expected_summary_contains": ["релевантный опыт", "документы о кадровых ресурсах"],
+    "expected_requirements_contains": ["релевантный опыт", "документы о кадровых ресурсах"],
+    "expected_signals_contains": ["legacy/существующая ИС / модификация системы", "enterprise/коробочный контур"]
+  }
+]

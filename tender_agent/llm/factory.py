@@ -10,10 +10,16 @@ def create_llm_provider(
     api_key: str,
     model: str,
     base_url: str | None = None,
+    max_chars_per_file: int | None = None,
 ) -> LLMProvider:
     normalized = provider_name.strip().lower()
     if normalized in {"openai", "openai_compatible", "compatible"}:
-        return OpenAICompatibleProvider(api_key=api_key, model=model, base_url=base_url)
+        return OpenAICompatibleProvider(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            max_chars_per_file=max_chars_per_file or 16000,
+        )
     if normalized == "stub":
         return StubLLMProvider(model=model)
     raise RuntimeError(
