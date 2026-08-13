@@ -4,9 +4,15 @@
 __pycache__/
 downloads/
 manual_downloads/
+artifacts/
+artifacts_*/
+state/
+logs/
+llm_errors.log
 platform_selectors.json
 .DS_Store
 ~$*.xlsx
 *.backup.xlsx
+*_backup.xlsx
 *.before_*.xlsx
 tender_analysis.xlsx
