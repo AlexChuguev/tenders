@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import copy
+
 from tender_agent.export.excel_schema import (
     apply_deadline_format,
     apply_status_fill,
@@ -55,13 +57,8 @@ def cleanup_legacy_workbook(workbook) -> None:
             column_index("facts_req_roles"): "Факт: роли",
             column_index("facts_req_licenses"): "Факт: лицензии/сертификаты",
         }
-        extra_header = any(
-            worksheet.cell(row=1, column=c).value
-            for c in range(column_count() + 1, max(column_count() + 6, worksheet.max_column + 1))
-        )
         if worksheet.max_row >= 1 and (
             any(worksheet.cell(row=1, column=index).value != header for index, header in expected_headers.items())
-            or extra_header
         ):
             rebuild_current_sheet(worksheet)
 
@@ -337,44 +334,72 @@ def sort_sheet_by_deadline(worksheet) -> None:
     rows = []
     max_column = max(worksheet.max_column, column_count())
     for row_index in range(2, worksheet.max_row + 1):
-        row = [
-            worksheet.cell(row=row_index, column=col).value
-            for col in range(1, max_column + 1)
-        ]
-        title_cell = worksheet.cell(row=row_index, column=column_index("title"))
-        summary_cell = worksheet.cell(row=row_index, column=column_index("summary"))
-        batch_cell = worksheet.cell(row=row_index, column=column_index("batch"))
-        rows.append(
-            (
-                row,
-                {
-                    "title": title_cell.hyperlink.target if title_cell.hyperlink else "",
-                    "summary": summary_cell.hyperlink.target if summary_cell.hyperlink else "",
-                    "batch": batch_cell.hyperlink.target if batch_cell.hyperlink else "",
-                },
-            )
-        )
-    rows.sort(key=lambda item: _deadline_sort_key(item[0][column_index("deadline") - 1]))
+        cells = [_snapshot_cell(worksheet.cell(row=row_index, column=col)) for col in range(1, max_column + 1)]
+        rows.append(cells)
+    rows.sort(key=lambda row: _deadline_sort_key(row[column_index("deadline") - 1]["value"]))
     worksheet.delete_rows(2, worksheet.max_row - 1)
-    for row, hyperlinks in rows:
-        while len(row) < column_count():
-            row.append("")
+    for row in rows:
+        while len(row) < max_column:
+            row.append(_empty_cell_snapshot())
         target_row = worksheet.max_row + 1
-        for col_index, value in enumerate(row, start=1):
-            worksheet.cell(row=target_row, column=col_index, value=value)
-        title_cell = worksheet.cell(row=target_row, column=column_index("title"))
-        if hyperlinks.get("title"):
-            title_cell.hyperlink = hyperlinks["title"]
-            title_cell.style = "Hyperlink"
-        summary_cell = worksheet.cell(row=target_row, column=column_index("summary"))
-        if hyperlinks.get("summary"):
-            summary_cell.hyperlink = hyperlinks["summary"]
-            summary_cell.style = "Hyperlink"
-        batch_cell = worksheet.cell(row=target_row, column=column_index("batch"))
-        if hyperlinks.get("batch"):
-            batch_cell.hyperlink = hyperlinks["batch"]
-            batch_cell.style = "Hyperlink"
+        for col_index, snapshot in enumerate(row, start=1):
+            _restore_cell(worksheet.cell(row=target_row, column=col_index), snapshot)
         apply_status_fill(worksheet.cell(row=target_row, column=column_index("status")))
+
+
+def _snapshot_cell(cell) -> dict[str, object]:
+    hyperlink = cell.hyperlink
+    return {
+        "value": cell.value,
+        "hyperlink_target": hyperlink.target if hyperlink else "",
+        "hyperlink_location": hyperlink.location if hyperlink else "",
+        "style": copy(cell._style),
+        "number_format": cell.number_format,
+        "font": copy(cell.font),
+        "fill": copy(cell.fill),
+        "border": copy(cell.border),
+        "alignment": copy(cell.alignment),
+        "protection": copy(cell.protection),
+        "comment": copy(cell.comment) if cell.comment else None,
+    }
+
+
+def _empty_cell_snapshot() -> dict[str, object]:
+    return {
+        "value": None,
+        "hyperlink_target": "",
+        "hyperlink_location": "",
+        "style": None,
+        "number_format": None,
+        "font": None,
+        "fill": None,
+        "border": None,
+        "alignment": None,
+        "protection": None,
+        "comment": None,
+    }
+
+
+def _restore_cell(cell, snapshot: dict[str, object]) -> None:
+    cell.value = snapshot.get("value")
+    if snapshot.get("style") is not None:
+        cell._style = copy(snapshot["style"])
+    if snapshot.get("number_format") is not None:
+        cell.number_format = snapshot["number_format"]
+    if snapshot.get("font") is not None:
+        cell.font = copy(snapshot["font"])
+    if snapshot.get("fill") is not None:
+        cell.fill = copy(snapshot["fill"])
+    if snapshot.get("border") is not None:
+        cell.border = copy(snapshot["border"])
+    if snapshot.get("alignment") is not None:
+        cell.alignment = copy(snapshot["alignment"])
+    if snapshot.get("protection") is not None:
+        cell.protection = copy(snapshot["protection"])
+    hyperlink_target = str(snapshot.get("hyperlink_target") or "")
+    hyperlink_location = str(snapshot.get("hyperlink_location") or "")
+    cell.hyperlink = hyperlink_target or hyperlink_location or None
+    cell.comment = copy(snapshot.get("comment")) if snapshot.get("comment") else None
 
 
 def _has_user_entered_row_data(worksheet, row_index: int) -> bool:
