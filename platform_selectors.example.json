@@ -18,5 +18,62 @@
       "a[href$='.xlsx']",
       "a[href$='.zip']"
     ]
+  },
+  "documents_by_host": {
+    "zakupki.gov.ru": {
+      "container": "body",
+      "links": [
+        "a[href*='epz/order/notice']",
+        "a[href*='download']",
+        "a[href*='attachment']",
+        "a[href$='.pdf']",
+        "a[href$='.doc']",
+        "a[href$='.docx']",
+        "a[href$='.xls']",
+        "a[href$='.xlsx']",
+        "a[href$='.zip']"
+      ]
+    },
+    "rts-tender.ru": {
+      "container": "body",
+      "links": [
+        "a[href*='download']",
+        "a[href*='File']",
+        "a[href*='Attachment']",
+        "a[href$='.pdf']",
+        "a[href$='.doc']",
+        "a[href$='.docx']",
+        "a[href$='.xls']",
+        "a[href$='.xlsx']",
+        "a[href$='.zip']"
+      ]
+    },
+    "roseltorg.ru": {
+      "container": "body",
+      "links": [
+        "a[href*='download']",
+        "a[href*='attachment']",
+        "a[href$='.pdf']",
+        "a[href$='.doc']",
+        "a[href$='.docx']",
+        "a[href$='.xls']",
+        "a[href$='.xlsx']",
+        "a[href$='.zip']"
+      ]
+    },
+    "agregatoreat.ru": {
+      "container": "body",
+      "links": [
+        "a[href*='download']",
+        "a[href*='attachment']",
+        "a[href*='files']",
+        "a[href$='.pdf']",
+        "a[href$='.doc']",
+        "a[href$='.docx']",
+        "a[href$='.xls']",
+        "a[href$='.xlsx']",
+        "a[href$='.zip']"
+      ]
+    }
   }
 }

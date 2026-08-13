@@ -14,10 +14,20 @@ from tender_agent.models import DownloadedTender, TenderRow
 ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar", ".rtf", ".txt"}
 SELDON_HOSTS = {"pro.myseldon.com", "myseldon.com"}
 IGNORED_HOST_SUBSTRINGS = {"t.me", "telegram.me", "vk.cc", "youtube.com", "youtu.be"}
+DOWNLOAD_DEBUG_LOG = Path(__file__).resolve().parents[1] / "download_debug.log"
 
 
 class DocumentAccessBlockedError(RuntimeError):
     """The tender page exposes documents, but the source blocks automated download."""
+
+
+def _log_download_debug(message: str) -> None:
+    try:
+        DOWNLOAD_DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with DOWNLOAD_DEBUG_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(message.rstrip() + "\n")
+    except Exception:
+        pass
 
 
 @dataclass
@@ -30,10 +40,13 @@ class PublicDocumentAdapter:
         tender: TenderRow,
         target_dir: Path,
     ) -> DownloadedTender:
+        host = urlparse(tender.url).netloc.lower()
         selectors = self._load_selectors()
-        documents_cfg = selectors["documents"]
+        documents_cfg = self._select_documents_config(selectors, tender.url)
         page = context.new_page()
-        page.goto(tender.url, wait_until="domcontentloaded")
+        page.set_default_timeout(15000)
+        page.set_default_navigation_timeout(20000)
+        page.goto(tender.url, wait_until="domcontentloaded", timeout=20000)
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
@@ -43,6 +56,13 @@ class PublicDocumentAdapter:
                 page.wait_for_selector(documents_cfg["container"], timeout=10000)
             except Exception:
                 pass
+
+        if "sberbank-ast.ru" in host:
+            downloaded = self._download_sberbank_ast_documents(page, tender, target_dir)
+            page.close()
+            if not downloaded.files:
+                raise RuntimeError("Documents were not found on the Sberbank-AST source page")
+            return downloaded
 
         hrefs = self._collect_hrefs(page, documents_cfg.get("links", []))
         if not hrefs:
@@ -58,21 +78,111 @@ class PublicDocumentAdapter:
         for css in selectors:
             for link in page.locator(css).all():
                 href = link.get_attribute("href")
-                if href:
-                    text = ""
-                    try:
-                        text = link.inner_text(timeout=500)
-                    except Exception:
-                        pass
-            absolute_href = urljoin(page.url, href)
-            if _is_supported_scheme(absolute_href) and not _is_ignored_host(absolute_href):
-                hrefs.append((absolute_href, text))
+                if not href:
+                    continue
+                text = ""
+                try:
+                    text = link.inner_text(timeout=500)
+                except Exception:
+                    pass
+                absolute_href = urljoin(page.url, href)
+                if _is_supported_scheme(absolute_href) and not _is_ignored_host(absolute_href):
+                    hrefs.append((absolute_href, text))
         return hrefs
 
     def _load_selectors(self) -> dict:
         if not self.selectors_path.exists():
             return {"documents": {"container": "body", "links": ["a"]}}
         return json.loads(self.selectors_path.read_text(encoding="utf-8"))
+
+    def _select_documents_config(self, selectors: dict, url: str) -> dict:
+        host = urlparse(url).netloc.lower()
+        host_overrides = selectors.get("documents_by_host", {})
+        if isinstance(host_overrides, dict):
+            for host_pattern, override in host_overrides.items():
+                if host_pattern.lower() in host and isinstance(override, dict):
+                    merged = dict(selectors.get("documents", {}))
+                    merged.update(override)
+                    return merged
+        return selectors.get("documents", {"container": "body", "links": ["a"]})
+
+    def _download_sberbank_ast_documents(
+        self,
+        page: Page,
+        tender: TenderRow,
+        target_dir: Path,
+    ) -> DownloadedTender:
+        entries = page.evaluate(
+            """
+            () => {
+              const links = [...document.querySelectorAll("a[onclick*='OpenFile('], a[id*='txbFileDocsName'], a span[content='leaf:FileName']")];
+              const normalized = links.map((node) => node.tagName === "SPAN" ? node.closest("a") : node).filter(Boolean);
+              const unique = [...new Map(normalized.map((link) => [link.outerHTML, link])).values()];
+              return unique.map((link) => {
+                const row = link.closest("tr") || link.parentElement?.parentElement;
+                const fileNode = row && typeof findXMLNodeByName === "function"
+                  ? findXMLNodeByName(row, "FileID")
+                  : null;
+                const onclick = link.getAttribute("onclick") || "";
+                const match = onclick.match(/OpenFile\\('([^']+)'\\s*,/);
+                return {
+                  name: (link.textContent || "").trim(),
+                  tsCode: match ? match[1] : "",
+                  fid: fileNode ? fileNode.value : ""
+                };
+              }).filter((item) => item.name && item.tsCode && item.fid);
+            }
+            """
+        )
+        _log_download_debug(f"[sberbank-ast] entries {tender.tender_id} count={len(entries)} url={page.url}")
+        if not entries:
+            return DownloadedTender(tender=tender, directory=target_dir)
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        downloaded = DownloadedTender(tender=tender, directory=target_dir)
+        links = page.locator("a[onclick*='OpenFile(']")
+        count = links.count()
+        for index in range(count):
+            link = links.nth(index)
+            try:
+                name = entries[index]["name"]
+            except Exception:
+                name = f"document_{index + 1}"
+            try:
+                with page.expect_download(timeout=15000) as download_info:
+                    link.click()
+                download = download_info.value
+                suggested_filename = (download.suggested_filename or "").strip()
+                filename = _choose_download_filename(suggested_filename, name, page.url)
+                output_path = target_dir / filename
+                download.save_as(str(output_path))
+                downloaded.files.append(output_path)
+                _log_download_debug(f"[sberbank-ast] saved {tender.tender_id} -> {output_path}")
+                continue
+            except Exception as exc:
+                _log_download_debug(f"[sberbank-ast] click-download-failed {tender.tender_id} {name}: {exc}")
+
+            entry = entries[index]
+            href = urljoin(page.url, f"/{entry['tsCode']}/File/DownloadFile?fid={entry['fid']}")
+            _log_download_debug(f"[sberbank-ast] request-fallback {tender.tender_id} {name} -> {href}")
+            response = page.context.request.get(href, timeout=30000)
+            _log_download_debug(
+                f"[sberbank-ast] response-fallback {tender.tender_id} status={response.status} "
+                f"content-type={response.headers.get('content-type','')} "
+                f"content-disposition={response.headers.get('content-disposition','')}"
+            )
+            if not response.ok:
+                continue
+            fallback_name = _detect_filename(href, name)
+            filename = _filename_from_headers(response.headers, fallback_name)
+            if _is_html_response(response.headers, filename):
+                _log_download_debug(f"[sberbank-ast] skip-html {tender.tender_id} {name} -> {filename}")
+                continue
+            output_path = target_dir / filename
+            output_path.write_bytes(response.body())
+            downloaded.files.append(output_path)
+            _log_download_debug(f"[sberbank-ast] saved-fallback {tender.tender_id} -> {output_path}")
+        return downloaded
 
 
 @dataclass
@@ -99,7 +209,9 @@ class SeldonFirstAdapter:
         target_dir: Path,
     ) -> DownloadedTender:
         page = context.new_page()
-        page.goto(tender.url, wait_until="domcontentloaded")
+        page.set_default_timeout(15000)
+        page.set_default_navigation_timeout(20000)
+        page.goto(tender.url, wait_until="domcontentloaded", timeout=20000)
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
@@ -229,6 +341,30 @@ def _detect_filename(href: str, text: str) -> str:
     if "." not in candidate and cleaned_text:
         candidate = f"{cleaned_text}.bin"
     return candidate[:180]
+
+
+def _choose_download_filename(suggested_filename: str, text: str, href: str) -> str:
+    safe_text_name = _detect_filename(href, text)
+    if not suggested_filename:
+        return safe_text_name
+    normalized = suggested_filename.strip()
+    if _looks_broken_filename(normalized):
+        return safe_text_name
+    if "." not in normalized:
+        return safe_text_name
+    return normalized[:180]
+
+
+def _looks_broken_filename(filename: str) -> bool:
+    stripped = filename.strip()
+    if not stripped:
+        return True
+    alpha_num_count = sum(char.isalnum() for char in stripped)
+    if alpha_num_count < 4:
+        return True
+    if not any(char.isalpha() for char in stripped):
+        return True
+    return False
 
 
 def _is_document_link(href: str, text: str) -> bool:

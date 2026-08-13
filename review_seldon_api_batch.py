@@ -21,6 +21,7 @@ from tender_agent.local_review import (
     _analysis_role_with_content,
     _collect_files_from_prepared_folder,
     _expand_archives,
+    _mark_analysis_as_technical_failure,
     _select_analysis_files,
 )
 from tender_agent.models import TenderAnalysisResult
@@ -151,6 +152,7 @@ def main() -> None:
                     decision=analysis.decision,
                     files=files,
                     deadline_at=deadline_at,
+                    summary_points=analysis.summary_points,
                 )
             ) if analysis.facts else "\n".join(analysis.summary_points)
             result = TenderAnalysisResult(
@@ -189,8 +191,12 @@ def main() -> None:
                 result.summary_text = "Техсбой LLM\nТребуется повторный прогон анализа"
                 if analysis.error_type == "network_error":
                     stats["network_failed"] += 1
+                    markdown = "Технический статус: сетевой сбой при обращении к LLM."
                 else:
                     stats["llm_failed"] += 1
+                    markdown = "Технический статус: ошибка LLM при анализе документов."
+                result.analysis_markdown = markdown
+                _mark_analysis_as_technical_failure(analysis, markdown=markdown)
             artifact_writer.write(
                 result=result,
                 analysis=analysis,

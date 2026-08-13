@@ -29,7 +29,9 @@ def main() -> None:
         id_column="Номер",
         title_column="Наименование лота",
     )
-    tenders.sort(key=lambda item: (item.deadline_at is None, item.deadline_at, item.title.lower()))
+    # Keep the original XLS row order inside the same deadline bucket.
+    # Sorting by title made sibling tenders with equal deadlines look random to the user.
+    tenders.sort(key=lambda item: (item.deadline_at is None, item.deadline_at, item.row_number))
 
     manifest_rows: list[dict[str, str]] = []
     used_names: set[str] = set()
