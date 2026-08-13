@@ -52,6 +52,12 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python run_regression_pack.py
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python clean_extraction_cache.py
 ```
 
+Если менялась версия/логика extraction и нужно убрать весь старый cache:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python clean_extraction_cache.py --all
+```
+
 ## Что уже реализовано
 
 - Импорт тендеров из `.xls`
@@ -65,6 +71,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python clean_extraction_cache.py
 - Verified LLM findings: LLM-вывод попадает в summary только если его quote найден в извлечённом тексте
 - Extraction/input reports в артефактах
 - Batch-level `_extraction_summary.json`
+- Standard review покрывает ключевые роли документов даже при низком `MAX_FILES_PER_TENDER`: ТЗ, извещение, договор/оплата, требования к участнику, НМЦ
 - Regression pack и unit-тесты на ключевые ошибки extraction/summary/Excel
 
 ## Ограничения
