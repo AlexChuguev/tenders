@@ -12,9 +12,15 @@ class StubLLMProvider:
         file_names = ", ".join(path.name for path in files) or "без файлов"
         return json.dumps(
             {
-                "classification_tag": "Не изучено",
+                "decision": "Уточнить",
                 "confidence_percent": 1,
-                "classification_comment": f"Stub provider вернул тестовый ответ для файлов: {file_names}.",
+                "summary_points": [
+                    f"1. Stub provider вернул тестовый ответ для файлов: {file_names}.",
+                    "2. Это не реальный анализ тендера.",
+                    "3. Проверяется только пайплайн обработки файлов.",
+                    "4. Итоговое решение по участию не сформировано.",
+                    "5. Для содержательной оценки нужен реальный LLM provider.",
+                ],
                 "analysis_markdown": (
                     "Это тестовый ответ stub-провайдера. "
                     "Алгоритм обработки, запись в Excel и маршрутизация файлов работают, "

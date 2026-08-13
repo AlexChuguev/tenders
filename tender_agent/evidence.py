@@ -74,8 +74,9 @@ def render_summary_points_with_evidence(
     decision: str,
     files: list[Path],
     deadline_at: datetime | None,
+    summary_points: list[str] | None = None,
 ) -> list[str]:
-    base = build_canonical_summary_points(facts, decision)
+    base = list(summary_points or build_canonical_summary_points(facts, decision))
     if not base:
         return []
     if deadline_at is None or deadline_at.date() < datetime.now().date():

@@ -75,6 +75,10 @@ def apply_quality_gates(payload: AnalysisPayload, facts: ExtractedFacts) -> Anal
         ):
             payload.decision = "Уточнить"
             payload.confidence_percent = min(payload.confidence_percent, 40)
+        if "key_pdf_partially_read" in flags:
+            payload.confidence_percent = min(payload.confidence_percent, 60)
+        if "key_file_truncated_before_llm" in flags:
+            payload.confidence_percent = min(payload.confidence_percent, 70)
         if "files_dropped_by_llm_budget" in flags:
             payload.confidence_percent = min(payload.confidence_percent, 60)
     else:
@@ -110,12 +114,25 @@ def _extraction_quality_flags(payload: AnalysisPayload) -> list[str]:
             flags.append("extraction_empty_key_file")
         elif key_file and status == "very_short_text":
             flags.append("extraction_very_short_key_file")
+        if key_file and row.get("truncated"):
+            flags.append("key_file_truncated_before_llm")
+        if key_file and _is_partial_pdf_row(row):
+            flags.append("key_pdf_partially_read")
     if text_statuses and all(status in {"empty_text", "very_short_text"} for status in text_statuses):
         flags.append("all_extracted_files_short")
     budget = report.get("llm_budget_report")
     if isinstance(budget, dict) and budget.get("dropped_files"):
         flags.append("files_dropped_by_llm_budget")
     return _dedupe(flags)
+
+
+def _is_partial_pdf_row(row: dict) -> bool:
+    try:
+        pages_total = int(row.get("pages_total") or 0)
+        pages_read = int(row.get("pages_read") or 0)
+    except (TypeError, ValueError):
+        return False
+    return pages_total > 0 and pages_read > 0 and pages_read < pages_total
 
 
 def _looks_like_key_source_file(name: str) -> bool:

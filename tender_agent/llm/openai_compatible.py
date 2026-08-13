@@ -89,9 +89,11 @@ class OpenAICompatibleProvider:
         budget = self.total_context_chars
         included: list[dict[str, object]] = []
         dropped: list[dict[str, object]] = []
+        empty: list[dict[str, object]] = []
         for file_path in files:
             chunk = _extract_text_snippet(file_path, max_chars=self.max_chars_per_file)
             if not chunk:
+                empty.append({"name": file_path.name, "reason": "empty_text_chunk"})
                 continue
             block = f"\n[file: {file_path.name}]\n{chunk}\n"
             if budget - len(block) <= 0:
@@ -102,7 +104,7 @@ class OpenAICompatibleProvider:
                         "block_chars": len(block),
                     }
                 )
-                break
+                continue
             parts.append(block)
             budget -= len(block)
             included.append(
@@ -117,6 +119,7 @@ class OpenAICompatibleProvider:
             "remaining_chars": budget,
             "included_files": included,
             "dropped_files": dropped,
+            "empty_files": empty,
         }
         return "".join(parts)
 

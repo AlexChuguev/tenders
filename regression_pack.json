@@ -11,7 +11,7 @@
   {
     "name": "legacy_outstaff_group_company",
     "artifact": "artifacts/local_review/Seldon.Pro_2026-04-08_13.22.01/Предоставление_услуг_по_созданию__адаптации__доработке_и_документированию_программного_обеспечения_для_АО__Группа_компан__1002d86fff.json",
-    "expected_decision": "Не брать",
+    "expected_decision": "Уточнить",
     "expected_summary_contains": ["Python", "PostgreSQL", "Angular"],
     "expected_stack_contains": ["Python", "PostgreSQL", "Angular"],
     "expected_signals_contains": ["legacy/существующая ИС / модификация системы", "аутсорсинг персонала, не проектная разработка"]
@@ -20,7 +20,7 @@
     "name": "python_outstaff_pick",
     "artifact": "artifacts/local_review/Seldon.Pro_2026-04-14_09.59.38/Подбор_разработчика_Python__5d37cde453.json",
     "expected_decision": "Уточнить",
-    "expected_summary_contains": ["аутстаффинг вместо проектной разработки", "PostgreSQL", "Vue", "Docker"],
+    "expected_summary_contains": ["предоставление специалистов / почасовая модель", "PostgreSQL", "Vue", "Docker"],
     "expected_stack_contains": ["PostgreSQL", "Vue", "Docker"],
     "expected_signals_contains": ["аутсорсинг персонала, не проектная разработка"]
   },
@@ -50,7 +50,7 @@
   {
     "name": "mobile_lekta",
     "artifact": "artifacts/local_review/Seldon.Pro_2026-04-10_16.11.56/Оказание_услуг_по_разработке_мобильного_приложения__Лекта__для_нужд_АО__Издательство__Просвещение__-_023П-2026__fa9c33ecc2.json",
-    "expected_decision": "Не брать",
+    "expected_decision": "Уточнить",
     "expected_summary_contains": ["Python", "React", "Kotlin", "Swift", "PostgreSQL"],
     "expected_stack_contains": ["Python", "React", "Kotlin", "Swift", "PostgreSQL"],
     "expected_signals_contains": ["сильное совпадение стека: Python, React"]

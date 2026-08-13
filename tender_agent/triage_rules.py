@@ -147,14 +147,11 @@ def postprocess_payload(
         decision = "Не брать"
         confidence = max(confidence, policy.confidence.construction_floor)
 
-    if "аутсорсинг персонала, не проектная разработка" in facts.triage_signals:
-        decision = "Не брать"
-        confidence = max(confidence, policy.confidence.outstaffing_floor)
+    if "аутсорсинг персонала, не проектная разработка" in facts.triage_signals and decision == "Брать":
+        confidence = min(confidence, 75)
 
-    if "legacy/существующая ИС / модификация системы" in facts.triage_signals:
-        if decision in {"Брать", "Уточнить"}:
-            decision = "Не брать"
-        confidence = max(confidence, policy.confidence.legacy_modification_floor)
+    if "legacy/существующая ИС / модификация системы" in facts.triage_signals and decision == "Брать":
+        confidence = min(confidence, 80)
 
     if any("низкий приоритет: тендер на сайт / веб-тематику" in signal for signal in facts.triage_signals):
         if decision == "Брать":
@@ -271,7 +268,7 @@ def _is_integration_only_enterprise_token(token: str, lower_text: str, developme
         if any(marker in window for marker in integration_markers):
             continue
         return False
-    return False
+    return True
 
 
 def _is_integration_only_non_core_stack(stack: list[str], lower_text: str, development_context: bool) -> bool:
@@ -361,8 +358,6 @@ def _detect_outstaffing_by_rate(lower_text: str) -> bool:
 def _has_hard_rejection_basis(facts: ExtractedFacts, policy: TriagePolicy) -> bool:
     hard_signals = {
         "непрофильный тип закупки: строительство/монтаж",
-        "аутсорсинг персонала, не проектная разработка",
-        "legacy/существующая ИС / модификация системы",
         "тяжёлый ИБ/регуляторный контур",
         "enterprise/коробочный контур",
     }

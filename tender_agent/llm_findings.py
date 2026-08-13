@@ -45,14 +45,19 @@ def verify_llm_findings(findings: list[LLMFinding], prepared_files: list[Path]) 
         if len(quote_norm) < 12:
             verified.append(_replace_finding(finding, verified=False, reason="quote_too_short"))
             continue
+        if finding.source_file:
+            source_text = corpus.get(finding.source_file)
+            if source_text and _quote_in_text(quote_norm, source_text):
+                verified.append(_replace_finding(finding, verified=True, reason="quote_found_in_source"))
+                continue
         matched_file = _find_quote_file(quote_norm, corpus)
         if matched_file:
             verified.append(
                 _replace_finding(
                     finding,
                     verified=True,
-                    reason="quote_found",
-                    source_file=finding.source_file or matched_file,
+                    reason="quote_found" if not finding.source_file else "quote_found_source_corrected",
+                    source_file=matched_file,
                 )
             )
             continue
@@ -119,13 +124,17 @@ def _load_corpus(files: list[Path]) -> dict[str, str]:
 
 def _find_quote_file(quote_norm: str, corpus: dict[str, str]) -> str:
     for name, text in corpus.items():
-        if quote_norm in text:
+        if _quote_in_text(quote_norm, text):
             return name
     compact_quote = re.sub(r"\s+", " ", quote_norm).strip()
     for name, text in corpus.items():
         if compact_quote and compact_quote in re.sub(r"\s+", " ", text):
             return name
     return ""
+
+
+def _quote_in_text(quote_norm: str, text_norm: str) -> bool:
+    return quote_norm in text_norm
 
 
 def _replace_finding(

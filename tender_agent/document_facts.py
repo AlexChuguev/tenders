@@ -430,12 +430,14 @@ def _find_fact_hit(
                 " ",
                 text[max(0, original_pos - 80) : original_pos + len(needle) + 120],
             ).strip(" ,;.")
+            page = _infer_page_from_text_offset(text, original_pos)
             return FactHit(
                 field=field,
                 term=term,
                 file_name=file_name,
                 fragment=fragment,
                 offset=original_pos,
+                page=page,
             )
     return None
 
@@ -896,7 +898,27 @@ def extract_payment_signals(text: str) -> list[str]:
 
 
 def count_hits(text: str, needles: list[str]) -> int:
-    return sum(1 for needle in needles if needle in text)
+    return sum(1 for needle in needles if _contains_policy_token(text, needle))
+
+
+def _contains_policy_token(text: str, needle: str) -> bool:
+    normalized = ru_normalize(needle)
+    if not normalized:
+        return False
+    if len(normalized) <= 3 and re.fullmatch(r"[a-zа-я0-9]+", normalized):
+        return re.search(rf"(?<![a-zа-я0-9]){re.escape(normalized)}(?![a-zа-я0-9])", text) is not None
+    return normalized in text
+
+
+def _infer_page_from_text_offset(text: str, offset: int) -> int | None:
+    prefix = text[: max(0, offset)]
+    matches = list(re.finditer(r"\[page\s+(\d+)\]", prefix, flags=re.I))
+    if not matches:
+        return None
+    try:
+        return int(matches[-1].group(1))
+    except ValueError:
+        return None
 
 
 def ru_normalize(value: str) -> str:

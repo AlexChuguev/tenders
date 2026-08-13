@@ -326,6 +326,7 @@ class LocalTenderReviewer:
                     decision=analysis.decision,
                     files=files,
                     deadline_at=tender.deadline_at,
+                    summary_points=analysis.summary_points,
                 )
             ),
             downloaded_files=[str(path) for path in files],
@@ -356,11 +357,19 @@ class LocalTenderReviewer:
             result.confidence_percent = 0
             result.summary_text = "Техсбой LLM\nТребуется повторный прогон анализа"
             result.analysis_markdown = "Технический статус: сетевой сбой при обращении к LLM."
+            _mark_analysis_as_technical_failure(
+                analysis,
+                markdown="Технический статус: сетевой сбой при обращении к LLM.",
+            )
         elif analysis.error_type == "llm_error":
             result.decision = "Техсбой LLM"
             result.confidence_percent = 0
             result.summary_text = "Техсбой LLM\nТребуется повторный прогон анализа"
             result.analysis_markdown = "Технический статус: ошибка LLM при анализе документов."
+            _mark_analysis_as_technical_failure(
+                analysis,
+                markdown="Технический статус: ошибка LLM при анализе документов.",
+            )
         self.artifact_writer.write(
             result=result,
             analysis=analysis,
@@ -428,6 +437,13 @@ def _bump_stat(stats: dict[str, int] | None, key: str) -> None:
     if stats is None:
         return
     stats[key] = int(stats.get(key, 0)) + 1
+
+
+def _mark_analysis_as_technical_failure(analysis, *, markdown: str) -> None:
+    analysis.decision = "Техсбой LLM"
+    analysis.confidence_percent = 0
+    analysis.summary_points = ["Техсбой LLM", "Требуется повторный прогон анализа"]
+    analysis.analysis_markdown = markdown
 
 
 def _resolve_target_date(value: str) -> date:
@@ -607,6 +623,7 @@ def _prioritize_files(files: list[Path]) -> list[Path]:
 
 
 def _select_analysis_files(files: list[Path], limit: int) -> list[Path]:
+    limit = _effective_analysis_file_limit(files, limit)
     ranked = _prioritize_files(files)
     slot_priority = ["тз", "извещение", "договор", "требования_к_участнику", "нмцк"]
     slot_best: dict[str, Path] = {}
@@ -651,6 +668,18 @@ def _select_analysis_files(files: list[Path], limit: int) -> list[Path]:
     if selected:
         return selected[:limit]
     return []
+
+
+def _effective_analysis_file_limit(files: list[Path], configured_limit: int) -> int:
+    if not files:
+        return 0
+    usable_count = sum(1 for path in files if _analysis_role_with_content(path) != "exclude")
+    if usable_count <= 1:
+        return min(1, usable_count)
+    # A tender normally needs at least TZ/notice, participant requirements,
+    # contract/payment and price docs to produce a defensible summary.
+    minimum_role_coverage = min(5, usable_count)
+    return max(int(configured_limit or 0), minimum_role_coverage)
 
 
 def _file_priority_key(path: Path) -> tuple[int, int, str]:
@@ -1128,6 +1157,34 @@ def _extract_text_sample(path: Path) -> str:
             return " ".join(texts)[:10000]
         if suffix in {".txt", ".md"}:
             return path.read_text(encoding="utf-8", errors="ignore")[:10000]
+        if suffix == ".xlsx":
+            import openpyxl
+
+            workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
+            parts: list[str] = []
+            for sheet in workbook.worksheets[:3]:
+                for row in sheet.iter_rows(min_row=1, max_row=min(sheet.max_row, 60), values_only=True):
+                    values = [str(value).strip() for value in row if value not in (None, "")]
+                    if values:
+                        parts.append(" | ".join(values[:8]))
+                    if sum(len(part) for part in parts) >= 10000:
+                        return " ".join(parts)[:10000]
+            return " ".join(parts)[:10000]
+        if suffix == ".xls":
+            import xlrd
+
+            workbook = xlrd.open_workbook(str(path), on_demand=True)
+            parts: list[str] = []
+            for sheet_name in workbook.sheet_names()[:3]:
+                sheet = workbook.sheet_by_name(sheet_name)
+                for row_index in range(min(sheet.nrows, 60)):
+                    values = [str(sheet.cell_value(row_index, col)).strip() for col in range(min(sheet.ncols, 8))]
+                    values = [value for value in values if value]
+                    if values:
+                        parts.append(" | ".join(values[:8]))
+                    if sum(len(part) for part in parts) >= 10000:
+                        return " ".join(parts)[:10000]
+            return " ".join(parts)[:10000]
     except Exception:
         return ""
     return ""

@@ -12,6 +12,10 @@ from xml.etree import ElementTree
 
 import openpyxl
 try:
+    import xlrd
+except Exception:  # pragma: no cover - optional dependency in some environments
+    xlrd = None
+try:
     from pypdf import PdfReader
 except Exception:  # pragma: no cover - optional dependency in some environments
     PdfReader = None
@@ -29,6 +33,9 @@ from tender_agent.policy import load_triage_policy, policy_metadata
 from tender_agent.summary_builder import build_canonical_summary_points
 from tender_agent.text_extract import extract_doc_with_textutil
 from tender_agent.triage_rules import postprocess_payload
+
+
+EXTRACTION_CACHE_VERSION = "2026-07-10-chunked-v2"
 
 
 class TenderAnalyzer:
@@ -56,6 +63,7 @@ class TenderAnalyzer:
         self.policy_metadata = policy_metadata(self.triage_policy)
         self.extract_cache_dir = prompt_template_path.resolve().parent / "state" / "extraction_cache"
         self.extract_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._extraction_metadata: dict[str, dict[str, object]] = {}
 
     def analyze(self, tender_url: str, files: list[Path]) -> AnalysisPayload:
         return self.analyze_with_context(tender_url=tender_url, files=files)
@@ -87,7 +95,11 @@ class TenderAnalyzer:
         try:
             prepared_files = self._prepare_files(files)
             temp_dir = getattr(self, "_temp_dir", None)
-            extraction_report = build_extraction_report(source_files=files, prepared_files=prepared_files)
+            extraction_report = build_extraction_report(
+                source_files=files,
+                prepared_files=prepared_files,
+                metadata_by_prepared=self._extraction_metadata,
+            )
             facts = extract_document_facts(
                 files=prepared_files,
                 tender_title=tender_title,
@@ -158,6 +170,7 @@ class TenderAnalyzer:
     def _prepare_files(self, files: list[Path]) -> list[Path]:
         prepared: list[Path] = []
         self._temp_dir = Path(tempfile.mkdtemp(prefix="tender_analysis_"))
+        self._extraction_metadata = {}
         for path in files:
             suffix = path.suffix.lower()
             if suffix == ".docx":
@@ -166,16 +179,28 @@ class TenderAnalyzer:
                 prepared.append(self._cached_or_convert(path, self._convert_doc_to_txt))
             elif suffix == ".xlsx":
                 prepared.append(self._cached_or_convert(path, self._convert_xlsx_to_txt))
+            elif suffix == ".xls":
+                prepared.append(self._cached_or_convert(path, self._convert_xls_to_txt))
             elif suffix == ".pdf" and PdfReader is not None:
                 prepared.append(self._cached_or_convert(path, self._convert_pdf_to_txt))
             else:
+                self._record_extraction_metadata(path, path, converter="native_text", cache_hit=False)
                 prepared.append(path)
         return prepared
 
     def _cached_or_convert(self, path: Path, converter) -> Path:
         cache_path = self._cache_path_for(path)
         if cache_path.exists() and _is_usable_cached_text(cache_path):
-            return cache_path
+            prepared = self._temp_dir / f"{path.stem}.txt"
+            shutil.copyfile(cache_path, prepared)
+            self._record_extraction_metadata(
+                path,
+                prepared,
+                converter=_converter_label(path),
+                cache_hit=True,
+                cached_from=str(cache_path),
+            )
+            return prepared
         if cache_path.exists():
             cache_path.unlink(missing_ok=True)
         converted = converter(path)
@@ -184,7 +209,10 @@ class TenderAnalyzer:
             if not _is_usable_text(text):
                 return converted
             cache_path.write_text(text, encoding="utf-8")
-            return cache_path
+            metadata = dict(self._extraction_metadata.get(str(converted.resolve()), {}))
+            metadata.update({"cache_hit": False, "cached_to": str(cache_path)})
+            self._extraction_metadata[str(converted.resolve())] = metadata
+            return converted
         except Exception:
             return converted
 
@@ -192,9 +220,11 @@ class TenderAnalyzer:
         stat = path.stat()
         key = "|".join(
             [
+                EXTRACTION_CACHE_VERSION,
                 str(path.resolve()),
                 str(int(stat.st_mtime)),
                 str(stat.st_size),
+                _file_sha256(path),
                 str(self.max_chars_per_file),
             ]
         )
@@ -207,7 +237,15 @@ class TenderAnalyzer:
             xml_bytes = archive.read("word/document.xml")
         root = ElementTree.fromstring(xml_bytes)
         texts = [node.text or "" for node in root.iter() if node.tag.endswith("}t")]
-        out.write_text(self._truncate_text("\n".join(filter(None, texts))), encoding="utf-8")
+        raw_text = "\n".join(filter(None, texts))
+        out.write_text(self._truncate_text(raw_text), encoding="utf-8")
+        self._record_extraction_metadata(
+            path,
+            out,
+            converter="docx_xml",
+            raw_text_chars=len(raw_text),
+            cache_hit=False,
+        )
         return out
 
     def _convert_doc_to_txt(self, path: Path) -> Path:
@@ -215,11 +253,14 @@ class TenderAnalyzer:
         text = extract_doc_with_textutil(path)
         if not text:
             out.write_text("", encoding="utf-8")
+            self._record_extraction_metadata(path, out, converter="textutil", raw_text_chars=0, cache_hit=False)
             return out
         if not text.strip():
             out.write_text("", encoding="utf-8")
+            self._record_extraction_metadata(path, out, converter="textutil", raw_text_chars=0, cache_hit=False)
             return out
         out.write_text(self._truncate_text(text), encoding="utf-8")
+        self._record_extraction_metadata(path, out, converter="textutil", raw_text_chars=len(text), cache_hit=False)
         return out
 
     def _convert_xlsx_to_txt(self, path: Path) -> Path:
@@ -230,27 +271,79 @@ class TenderAnalyzer:
             parts.append(f"[sheet] {sheet.title}")
             for line in _extract_meaningful_xlsx_lines(sheet, max_lines=120):
                 parts.append(line)
-        out.write_text(self._truncate_text("\n".join(parts)), encoding="utf-8")
+        raw_text = "\n".join(parts)
+        out.write_text(self._truncate_text(raw_text), encoding="utf-8")
+        self._record_extraction_metadata(
+            path,
+            out,
+            converter="openpyxl",
+            raw_text_chars=len(raw_text),
+            sheets_total=len(workbook.worksheets),
+            sheets_read=min(len(workbook.worksheets), 8),
+            cache_hit=False,
+        )
+        return out
+
+    def _convert_xls_to_txt(self, path: Path) -> Path:
+        out = self._temp_dir / f"{path.stem}.txt"
+        if xlrd is None:
+            out.write_text("", encoding="utf-8")
+            self._record_extraction_metadata(path, out, converter="xlrd_missing", raw_text_chars=0, cache_hit=False)
+            return out
+        workbook = xlrd.open_workbook(str(path), on_demand=True)
+        parts: list[str] = []
+        sheet_names = _select_relevant_xls_sheet_names(workbook.sheet_names())
+        for sheet_name in sheet_names:
+            sheet = workbook.sheet_by_name(sheet_name)
+            parts.append(f"[sheet] {sheet.name}")
+            for line in _extract_meaningful_xls_lines(sheet, max_lines=120):
+                parts.append(line)
+        raw_text = "\n".join(parts)
+        out.write_text(self._truncate_text(raw_text), encoding="utf-8")
+        self._record_extraction_metadata(
+            path,
+            out,
+            converter="xlrd",
+            raw_text_chars=len(raw_text),
+            sheets_total=len(workbook.sheet_names()),
+            sheets_read=len(sheet_names),
+            cache_hit=False,
+        )
         return out
 
     def _convert_pdf_to_txt(self, path: Path) -> Path:
         out = self._temp_dir / f"{path.stem}.txt"
         reader = PdfReader(str(path))
         parts: list[str] = []
-        budget = max(self.max_chars_per_file * 3, self.max_chars_per_file)
+        total_pages = len(reader.pages)
+        max_pdf_chars = max(self.max_chars_per_file * 20, 160_000)
         total_chars = 0
-        for page in reader.pages:
+        pages_read = 0
+        for index, page in enumerate(reader.pages, start=1):
             page_text = page.extract_text() or ""
-            parts.append(page_text)
+            pages_read = index
+            if page_text.strip():
+                parts.append(f"\n[page {index}]\n{page_text}")
             total_chars += len(page_text)
-            if total_chars >= budget:
+            if total_chars >= max_pdf_chars:
                 break
         text = "\n".join(parts).strip()
-        if len(text) < 40:
+        ocr_attempted = len(text) < 40
+        if ocr_attempted:
             fallback = _extract_pdf_with_pdftotext(path)
             if fallback.strip():
                 text = fallback
         out.write_text(self._truncate_text(text), encoding="utf-8")
+        self._record_extraction_metadata(
+            path,
+            out,
+            converter="pypdf_pdftotext",
+            raw_text_chars=len(text),
+            pages_total=total_pages,
+            pages_read=pages_read,
+            ocr_attempted=ocr_attempted,
+            cache_hit=False,
+        )
         return out
 
     def _truncate_text(self, text: str) -> str:
@@ -263,81 +356,113 @@ class TenderAnalyzer:
         return excerpt[: self.max_chars_per_file].rstrip() + "\n\n[truncated]"
 
     def _build_relevant_excerpt(self, text: str) -> str:
-        markers = [
-            "сведения о системе",
-            "назначение системы",
-            "цель и задачи модификации",
-            "архитектур",
-            "стек технолог",
-            "технологическ",
-            "используемые технологии",
-            "технические требования",
-            "требования к системе",
-            "программно-техническ",
-            "интеграц",
-            "api",
-            "rest",
-            "субд",
-            "база данных",
-            "postgres",
-            "oracle",
-            "java",
-            "javascript",
-            "react",
-            "python",
-            "php",
-            "1с",
-            "модификац",
-            "адаптац",
-            "существующ",
-            "требования к участник",
-            "требования к поставщик",
-            "требования к исполнител",
-            "квалификац",
-            "опыт",
-            "оборот",
-            "выручк",
-            "финансов",
-            "оплат",
-            "аванс",
-            "обеспечени",
-            "банковск",
-            "гарант",
-            "порядок расчет",
-            "порядок расчёт",
+        marker_groups = [
+            [
+                "сведения о системе",
+                "назначение системы",
+                "цель и задачи модификации",
+                "архитектур",
+                "стек технолог",
+                "технологическ",
+                "используемые технологии",
+                "технические требования",
+                "требования к системе",
+                "программно-техническ",
+                "интеграц",
+                "api",
+                "rest",
+                "субд",
+                "база данных",
+                "postgres",
+                "oracle",
+                "java",
+                "javascript",
+                "react",
+                "python",
+                "php",
+                "1с",
+                "модификац",
+                "адаптац",
+                "существующ",
+            ],
+            [
+                "требования к участник",
+                "требования к поставщик",
+                "требования к исполнител",
+                "требования к подрядчик",
+                "квалификац",
+                "опыт",
+                "аналогичн",
+                "референс",
+                "оборот",
+                "выручк",
+                "финансов",
+                "штат",
+                "специалист",
+                "персонал",
+                "сро",
+                "лиценз",
+                "сертификат",
+                "аккредит",
+            ],
+            [
+                "оплат",
+                "аванс",
+                "предоплат",
+                "постоплат",
+                "обеспечени",
+                "банковск",
+                "гарант",
+                "порядок расчет",
+                "порядок расчёт",
+                "договор",
+                "акт приемк",
+                "акт приёмк",
+            ],
         ]
-        windows: list[tuple[int, int]] = [(0, min(len(text), 2200))]
         lowered = text.casefold().replace("ё", "е")
-        for marker in markers:
-            start = 0
-            while True:
-                idx = lowered.find(marker, start)
-                if idx < 0:
+        parts: list[str] = [text[: min(len(text), 2200)].strip()]
+        group_budget = max(1200, (self.max_chars_per_file - sum(len(part) for part in parts)) // 3)
+        seen_windows: list[tuple[int, int]] = [(0, min(len(text), 2200))]
+        for markers in marker_groups:
+            group_parts: list[str] = []
+            for start, end in _marker_windows(lowered, markers, text_length=len(text)):
+                if _overlaps_existing((start, end), seen_windows):
+                    continue
+                chunk = text[start:end].strip()
+                if not chunk:
+                    continue
+                group_parts.append(chunk)
+                seen_windows.append((start, end))
+                if sum(len(part) for part in group_parts) >= group_budget:
                     break
-                windows.append((max(0, idx - 350), min(len(text), idx + 1400)))
-                start = idx + len(marker)
-
-        merged: list[tuple[int, int]] = []
-        for start, end in sorted(windows):
-            if not merged or start > merged[-1][1] + 200:
-                merged.append((start, end))
-            else:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-
-        parts: list[str] = []
-        for start, end in merged:
-            chunk = text[start:end].strip()
-            if not chunk:
-                continue
-            if parts:
+            if group_parts:
                 parts.append("\n\n[section]\n")
-            parts.append(chunk)
-            if sum(len(part) for part in parts) >= self.max_chars_per_file * 2:
+                parts.append("\n\n".join(group_parts))
+
+        trimmed_parts: list[str] = []
+        total = 0
+        for part in parts:
+            if not part:
+                continue
+            remaining = self.max_chars_per_file - total
+            if remaining <= 0:
                 break
-        excerpt = "".join(parts).strip()
+            trimmed_parts.append(part[:remaining])
+            total += len(trimmed_parts[-1])
+        excerpt = "".join(trimmed_parts).strip()
         if excerpt:
             return excerpt
         return text[: self.max_chars_per_file]
+
+    def _record_extraction_metadata(self, source: Path, prepared: Path, **metadata: object) -> None:
+        payload = {
+            "source_path": str(source),
+            "source_name": source.name,
+            "prepared_path": str(prepared),
+            **metadata,
+        }
+        self._extraction_metadata[str(prepared.resolve())] = payload
 
     def _parse_response(self, text: str) -> AnalysisPayload:
         try:
@@ -378,6 +503,7 @@ class TenderAnalyzer:
                 analysis_markdown=text.strip(),
                 completeness_label="низкая",
                 llm_raw_text=text,
+                error_type="llm_error",
             )
 
 
@@ -599,13 +725,13 @@ def _extract_pdf_with_ocr(path: Path) -> str:
         with tempfile.TemporaryDirectory() as tmpdir:
             prefix = Path(tmpdir) / "page"
             subprocess.run(
-                [pdftoppm, "-r", "200", "-f", "1", "-l", "2", "-png", str(path), str(prefix)],
+                [pdftoppm, "-r", "200", "-f", "1", "-l", "5", "-png", str(path), str(prefix)],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             texts: list[str] = []
-            for img in sorted(Path(tmpdir).glob("page-*.png"))[:2]:
+            for img in sorted(Path(tmpdir).glob("page-*.png"))[:5]:
                 outbase = img.with_suffix("")
                 subprocess.run(
                     [tesseract, str(img), str(outbase), "-l", "rus+eng", "--dpi", "200"],
@@ -681,3 +807,100 @@ def _normalize_cell_value(value: object) -> str:
 
 def _normalize_sheet_name(value: str) -> str:
     return value.casefold().replace("ё", "е").strip()
+
+
+def _select_relevant_xls_sheet_names(sheet_names: list[str]) -> list[str]:
+    scored = sorted(sheet_names, key=lambda name: _worksheet_priority_key_name(name))
+    return scored[: min(len(scored), 8)]
+
+
+def _worksheet_priority_key_name(name: str) -> tuple[int, str]:
+    title = _normalize_sheet_name(name)
+    if any(token in title for token in ["тз", "техничес", "извещ", "документац", "требован", "кп", "коммерч", "квалифик"]):
+        band = 0
+    elif any(token in title for token in ["договор", "контракт", "нмц", "обоснован", "смет"]):
+        band = 1
+    else:
+        band = 2
+    return (band, name.lower())
+
+
+def _extract_meaningful_xls_lines(sheet, max_lines: int) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    dense_row_seen = False
+    row_limit = min(sheet.nrows, 200)
+    for row_index in range(row_limit):
+        values = [
+            _normalize_cell_value(sheet.cell_value(row_index, col_index))
+            for col_index in range(min(sheet.ncols, 16))
+        ]
+        values = [value for value in values if value]
+        if not values:
+            continue
+        if len(values) >= 3:
+            dense_row_seen = True
+        if not dense_row_seen and len(values) == 1 and len(values[0]) < 3:
+            continue
+        line = " | ".join(values[:8]).strip()
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return lines
+
+
+def _marker_windows(lowered_text: str, markers: list[str], *, text_length: int) -> list[tuple[int, int]]:
+    windows: list[tuple[int, int]] = []
+    for marker in markers:
+        start = 0
+        while True:
+            idx = lowered_text.find(marker, start)
+            if idx < 0:
+                break
+            windows.append((max(0, idx - 450), min(text_length, idx + 1800)))
+            start = idx + len(marker)
+    return _merge_windows(windows)
+
+
+def _merge_windows(windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(windows):
+        if not merged or start > merged[-1][1] + 200:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _overlaps_existing(window: tuple[int, int], existing: list[tuple[int, int]]) -> bool:
+    start, end = window
+    return any(start < other_end and end > other_start for other_start, other_end in existing)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except Exception:
+        return ""
+    return digest.hexdigest()
+
+
+def _converter_label(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return "docx_xml"
+    if suffix == ".doc":
+        return "textutil"
+    if suffix == ".xlsx":
+        return "openpyxl"
+    if suffix == ".xls":
+        return "xlrd"
+    if suffix == ".pdf":
+        return "pypdf_pdftotext"
+    return "native_text"

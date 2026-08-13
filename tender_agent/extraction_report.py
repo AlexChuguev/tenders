@@ -34,26 +34,48 @@ def build_input_file_report(
     }
 
 
-def build_extraction_report(*, source_files: list[Path], prepared_files: list[Path]) -> dict[str, object]:
+def build_extraction_report(
+    *,
+    source_files: list[Path],
+    prepared_files: list[Path],
+    metadata_by_prepared: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
+    metadata_by_prepared = metadata_by_prepared or {}
     rows: list[dict[str, object]] = []
     for source, prepared in zip(source_files, prepared_files):
         text = _safe_read_text(prepared)
-        rows.append(
-            {
-                "source_path": str(source),
-                "source_name": source.name,
-                "source_suffix": source.suffix.lower(),
-                "source_size_bytes": _safe_size(source),
-                "prepared_path": str(prepared),
-                "prepared_name": prepared.name,
-                "converter": _converter_name(source),
-                "cache_hit": "state/extraction_cache" in str(prepared),
-                "text_chars": len(text),
-                "non_whitespace_chars": sum(1 for char in text if not char.isspace()),
-                "truncated": "[truncated]" in text,
-                "status": _text_status(text),
-            }
-        )
+        metadata = metadata_by_prepared.get(str(prepared.resolve()), {})
+        row = {
+            "source_path": str(source),
+            "source_name": source.name,
+            "source_suffix": source.suffix.lower(),
+            "source_size_bytes": _safe_size(source),
+            "prepared_path": str(prepared),
+            "prepared_name": prepared.name,
+            "converter": metadata.get("converter") or _converter_name(source),
+            "cache_hit": bool(metadata.get("cache_hit")) or "state/extraction_cache" in str(prepared),
+            "text_chars": len(text),
+            "non_whitespace_chars": sum(1 for char in text if not char.isspace()),
+            "raw_text_chars": int(metadata.get("raw_text_chars") or len(text) or 0),
+            "truncated": "[truncated]" in text,
+            "status": _text_status(text),
+        }
+        for key in (
+            "pages_total",
+            "pages_read",
+            "sheets_total",
+            "sheets_read",
+            "ocr_attempted",
+            "cached_to",
+            "cached_from",
+        ):
+            if key in metadata:
+                row[key] = metadata[key]
+        if row["truncated"]:
+            row["loss_note"] = "text_truncated_before_llm"
+        if row.get("pages_total") and row.get("pages_read") and row["pages_read"] < row["pages_total"]:
+            row["loss_note"] = "partial_pdf_read"
+        rows.append(row)
     return {
         "total_files": len(source_files),
         "prepared_files": len(prepared_files),
@@ -174,11 +196,16 @@ def _extract_summary_issues(extraction: object, input_report: object) -> list[st
                 issues.append(f"{row.get('source_name')}: {status}")
             if row.get("truncated"):
                 issues.append(f"{row.get('source_name')}: truncated")
+            if row.get("loss_note"):
+                issues.append(f"{row.get('source_name')}: {row.get('loss_note')}")
         budget = extraction.get("llm_budget_report")
         if isinstance(budget, dict):
             for row in budget.get("dropped_files") or []:
                 if isinstance(row, dict):
                     issues.append(f"{row.get('name')}: dropped_by_llm_budget")
+            for row in budget.get("empty_files") or []:
+                if isinstance(row, dict):
+                    issues.append(f"{row.get('name')}: empty_llm_chunk")
     return _dedupe_issues(issues)
 
 

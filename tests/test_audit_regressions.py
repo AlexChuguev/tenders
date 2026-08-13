@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 
 from tender_agent.analysis_types import AnalysisPayload, ExtractedFacts, FactHit, LLMFinding, ParticipantRequirements
+from tender_agent.analysis import TenderAnalyzer
+from tender_agent.document_facts import count_hits
 from tender_agent.document_facts import _extract_min_turnover_rub, extract_license_signals, extract_stack_signals
 from tender_agent.evidence import collect_summary_evidence
-from tender_agent.export.excel_migration import remove_technical_rows, sort_sheet_by_deadline
+from tender_agent.export.excel_migration import cleanup_legacy_workbook, remove_technical_rows, sort_sheet_by_deadline
 from tender_agent.export.excel_schema import column_count, column_index, ensure_sheet_structure
 from tender_agent.quality_gates import apply_quality_gates
-from tender_agent.local_review import _analysis_role
+from tender_agent.local_review import _analysis_role, _select_analysis_files
 from tender_agent.llm_findings import merge_verified_findings_into_summary, verify_llm_findings
 from tender_agent.triage_rules import postprocess_payload
 
@@ -112,6 +117,32 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertLessEqual(result.confidence_percent, 60)
         self.assertIn("files_dropped_by_llm_budget", facts.quality_flags)
 
+    def test_partial_pdf_and_truncated_key_file_cap_confidence(self) -> None:
+        facts = _minimal_facts()
+        payload = AnalysisPayload(
+            decision="Брать",
+            confidence_percent=95,
+            summary_points=["1. Стек: Python", "2. Требования к контрагенту: не указано"],
+            analysis_markdown="",
+            completeness_label="средняя",
+            facts=facts,
+            extraction_report={
+                "files": [
+                    {
+                        "source_name": "Техническое задание.pdf",
+                        "status": "ok",
+                        "truncated": True,
+                        "pages_total": 40,
+                        "pages_read": 12,
+                    }
+                ],
+            },
+        )
+        result = apply_quality_gates(payload, facts)
+        self.assertLessEqual(result.confidence_percent, 60)
+        self.assertIn("key_pdf_partially_read", facts.quality_flags)
+        self.assertIn("key_file_truncated_before_llm", facts.quality_flags)
+
     def test_llm_finding_verification_requires_quote(self) -> None:
         from pathlib import Path
         import tempfile
@@ -152,6 +183,28 @@ class AuditRegressionTests(unittest.TestCase):
         merged = merge_verified_findings_into_summary(summary, findings)
         self.assertIn("опыт исследований в категории геосервисов", merged[2])
 
+    def test_evidence_renderer_keeps_verified_llm_summary(self) -> None:
+        facts = _minimal_facts()
+        facts.stack = []
+        summary = [
+            "1. Риски: существенные риски не выявлены",
+            "2. Стек: Python; React",
+            "3. Требования к контрагенту: опыт исследований в категории геосервисов",
+        ]
+        rendered = collect_summary_evidence(facts=facts, files=[])
+        self.assertEqual(rendered, {})
+        from tender_agent.evidence import render_summary_points_with_evidence
+
+        lines = render_summary_points_with_evidence(
+            facts=facts,
+            decision="Уточнить",
+            files=[],
+            deadline_at=datetime(2026, 5, 1),
+            summary_points=summary,
+        )
+        self.assertEqual(lines[1], "2. Стек: Python; React")
+        self.assertEqual(lines[2], "3. Требования к контрагенту: опыт исследований в категории геосервисов")
+
     def test_unverified_llm_finding_does_not_replace_summary(self) -> None:
         summary = ["3. Требования к контрагенту: не указано"]
         findings = [
@@ -163,6 +216,53 @@ class AuditRegressionTests(unittest.TestCase):
             )
         ]
         self.assertEqual(merge_verified_findings_into_summary(summary, findings), summary)
+
+    def test_short_policy_tokens_require_word_boundaries(self) -> None:
+        self.assertEqual(count_hits("организация конференции", ["ии"]), 0)
+        self.assertEqual(count_hits("подготовка презентации", ["pr"]), 0)
+        self.assertEqual(count_hits("ai платформа", ["ai"]), 1)
+
+    def test_selection_limit_one_still_keeps_role_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            files = [
+                root / "Техническое задание.docx",
+                root / "Требования к участникам.docx",
+                root / "Проект договора.docx",
+                root / "Обоснование НМЦ.xlsx",
+                root / "Извещение.pdf",
+            ]
+            for path in files:
+                path.write_text("placeholder", encoding="utf-8")
+            selected = _select_analysis_files(files, limit=1)
+            self.assertGreaterEqual(len(selected), 5)
+
+    def test_xls_conversion_extracts_text(self) -> None:
+        import xlwt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompt = root / "prompt.md"
+            prompt.write_text("stub", encoding="utf-8")
+            xls_path = root / "Требования.xls"
+            workbook = xlwt.Workbook()
+            sheet = workbook.add_sheet("Требования")
+            sheet.write(0, 0, "оборот не менее 30 млн рублей")
+            sheet.write(1, 0, "опыт проведения исследований в категории геосервисов")
+            workbook.save(str(xls_path))
+
+            analyzer = TenderAnalyzer(
+                provider_name="stub",
+                api_key="",
+                model="stub",
+                base_url="",
+                prompt_template_path=prompt,
+                max_chars_per_file=8000,
+            )
+            prepared = analyzer._prepare_files([xls_path])
+            text = prepared[0].read_text(encoding="utf-8")
+            self.assertIn("оборот не менее 30 млн рублей", text)
+            self.assertIn("опыт проведения исследований", text)
 
     def test_sort_preserves_user_columns_status_and_comment(self) -> None:
         wb = Workbook()
@@ -190,6 +290,7 @@ class AuditRegressionTests(unittest.TestCase):
             "",
             "manual late",
         ])
+        ws.cell(row=2, column=extra_col).comment = Comment("ручное примечание", "user")
         ws.append([
             "",
             "",
@@ -207,6 +308,40 @@ class AuditRegressionTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=3, column=column_index("status")).value, "Проверено")
         self.assertEqual(ws.cell(row=3, column=column_index("comment")).value, "ручной комментарий")
         self.assertEqual(ws.cell(row=3, column=extra_col).value, "manual late")
+        self.assertIsNotNone(ws.cell(row=3, column=extra_col).comment)
+        self.assertEqual(ws.cell(row=3, column=extra_col).comment.text, "ручное примечание")
+
+    def test_cleanup_does_not_rebuild_just_because_user_extra_column_exists(self) -> None:
+        wb = Workbook()
+        ws = wb.active
+        ensure_sheet_structure(ws)
+        extra_col = column_count() + 1
+        ws.cell(row=1, column=extra_col, value="Ручная колонка")
+        ws.append([
+            "",
+            "Проверено",
+            "summary",
+            "title",
+            datetime(2026, 5, 1),
+            "comment",
+            "batch",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "manual value",
+        ])
+
+        cleanup_legacy_workbook(wb)
+
+        self.assertEqual(ws.cell(row=1, column=extra_col).value, "Ручная колонка")
+        self.assertEqual(ws.cell(row=2, column=extra_col).value, "manual value")
 
     def test_remove_technical_rows_keeps_rows_with_user_comment(self) -> None:
         wb = Workbook()

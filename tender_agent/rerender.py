@@ -124,6 +124,7 @@ def rerender_artifact_result(
         decision=rerendered.decision,
         files=files,
         deadline_at=artifact.result.deadline_at,
+        summary_points=rerendered.summary_points,
     )
     return rerendered, facts
 
